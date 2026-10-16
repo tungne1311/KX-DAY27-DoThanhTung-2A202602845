@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -52,8 +54,9 @@ def _headers(accept: str = "application/vnd.github+json") -> dict[str, str]:
 
 
 def parse_pr_url(pr_url: str) -> tuple[str, str, int]:
-    m = PR_URL_RE.search(pr_url)
-    if not m:
+    url = urlsplit(pr_url.strip())
+    m = re.fullmatch(r"/([^/]+)/([^/]+)/pull/([1-9]\d*)(?:/(?:files|commits|checks))?/?", url.path)
+    if url.scheme != "https" or url.netloc.lower() != "github.com" or not m:
         raise ValueError(f"Not a PR URL: {pr_url}")
     return m.group(1), m.group(2), int(m.group(3))
 
@@ -74,9 +77,13 @@ def fetch_pr(pr_url: str) -> PullRequest:
         diff_resp.raise_for_status()
         diff = diff_resp.text
 
-        files_resp = client.get(f"{base}/files", headers=_headers())
-        files_resp.raise_for_status()
-        files = [f["filename"] for f in files_resp.json()]
+        files = []
+        page_url = f"{base}/files?per_page=100"
+        while page_url:
+            files_resp = client.get(page_url, headers=_headers())
+            files_resp.raise_for_status()
+            files.extend(f["filename"] for f in files_resp.json())
+            page_url = files_resp.links.get("next", {}).get("url")
 
     return PullRequest(
         url=pr_url,
@@ -93,17 +100,30 @@ def fetch_pr(pr_url: str) -> PullRequest:
     )
 
 
-def post_review_comment(pr_url: str, body: str) -> None:
+def post_review_comment(pr_url: str, body: str, *, idempotency_key: str | None = None) -> str:
     """Post a top-level discussion comment back to the PR.
 
     Uses the Issues endpoint (PRs are issues under the hood for top-level
     comments). For formal Approve/Request-changes use the Reviews endpoint
     instead — which requires collaborator status on the target repo.
 
-    Takes the PR URL directly so callers don't need a `PullRequest` object.
+    Return the posted comment URL. A stable session key prevents duplicates
+    when a single worker retries after posting but before checkpointing.
     """
     owner, repo, number = parse_pr_url(pr_url)
     url = f"{API}/repos/{owner}/{repo}/issues/{number}/comments"
     with httpx.Client(timeout=30.0) as client:
+        if idempotency_key:
+            marker = f"<!-- hitl-review:{hashlib.sha256(idempotency_key.encode()).hexdigest()} -->"
+            page_url = f"{url}?per_page=100"
+            while page_url:
+                existing = client.get(page_url, headers=_headers())
+                existing.raise_for_status()
+                for comment in existing.json():
+                    if marker in (comment.get("body") or ""):
+                        return comment["html_url"]
+                page_url = existing.links.get("next", {}).get("url")
+            body = f"{body}\n\n{marker}"
         resp = client.post(url, headers=_headers(), json={"body": body})
         resp.raise_for_status()
+        return resp.json()["html_url"]

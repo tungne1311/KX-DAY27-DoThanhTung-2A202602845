@@ -16,15 +16,17 @@ import asyncio
 
 from rich.console import Console
 from rich.table import Table
+from dotenv import load_dotenv
 
 from common.db import db_conn, replay_events
+from common.terminal import create_console
 
 
 RISK_COLOR = {"low": "green", "med": "yellow", "high": "red"}
 
 
-async def list_threads() -> None:
-    console = Console()
+async def recent_threads() -> list[dict]:
+    """Return queryable session summaries for CLI and Streamlit."""
     async with db_conn() as conn:
         async with conn.execute(
             """
@@ -32,7 +34,8 @@ async def list_threads() -> None:
                    pr_url,
                    MIN(timestamp)        AS started,
                    MAX(timestamp)        AS last_event,
-                   MAX(risk_level)       AS worst_risk,
+                   CASE MAX(CASE risk_level WHEN 'high' THEN 3 WHEN 'med' THEN 2 ELSE 1 END)
+                       WHEN 3 THEN 'high' WHEN 2 THEN 'med' ELSE 'low' END AS worst_risk,
                    COUNT(*)              AS events
               FROM audit_events
              GROUP BY thread_id, pr_url
@@ -42,6 +45,12 @@ async def list_threads() -> None:
         ) as cur:
             rows = await cur.fetchall()
 
+    return [dict(row) for row in rows]
+
+
+async def list_threads() -> None:
+    console = create_console()
+    rows = await recent_threads()
     table = Table(title="Recent review sessions")
     for col in ("thread_id", "pr_url", "started", "last_event", "worst_risk", "events"):
         table.add_column(col)
@@ -58,7 +67,7 @@ async def list_threads() -> None:
 
 
 async def replay(thread_id: str) -> None:
-    console = Console()
+    console = create_console()
     events = await replay_events(thread_id)
 
     if not events:
@@ -84,6 +93,7 @@ async def replay(thread_id: str) -> None:
 
 
 def main() -> None:
+    load_dotenv()
     parser = argparse.ArgumentParser()
     parser.add_argument("--thread", help="Replay one thread by id")
     parser.add_argument("--list", action="store_true", help="List recent threads")

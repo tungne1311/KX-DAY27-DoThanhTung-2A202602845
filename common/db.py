@@ -33,7 +33,7 @@ async def _ensure_schema(conn: aiosqlite.Connection) -> None:
     ) as cur:
         if await cur.fetchone() is not None:
             return
-    await conn.executescript(SCHEMA_FILE.read_text())
+    await conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
     await conn.commit()
 
 

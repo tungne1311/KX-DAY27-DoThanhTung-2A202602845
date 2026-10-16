@@ -1,5 +1,13 @@
 # Day27 — Track 3: HITL PR Review Agent
 
+> **Implementation completed:** all five exercises are implemented. See
+> [HUONG_DAN.md](HUONG_DAN.md) for Windows setup, offline demos, real API mode,
+> session recovery, validation commands and the completed deliverable checklist.
+> The assignment text below is retained for reference. The final graph adds an
+> approval step after synthesis and after each edit before posting a comment.
+> See [LAB_CHECKLIST.md](LAB_CHECKLIST.md) for the requirement-by-requirement audit
+> and [VALIDATION.md](VALIDATION.md) for validation results and limits.
+
 A 2-hour lab that builds a human-in-the-loop pull-request review agent in **LangGraph**, end-to-end.
 
 > 1. Agent reads a PR, analyzes code changes, proposes review comments.
@@ -36,13 +44,16 @@ Every step writes a row to a structured audit table — every routing decision, 
 flowchart TD
     Fetch[fetch_pr] --> Analyze[analyze]
     Analyze --> Route{confidence}
-    Route -- "> 72%" --> Auto[auto_approve]
-    Route -- "58–72%" --> Human["human_approval<br/>(interrupt)"]
-    Route -- "< 58%" --> Escalate["escalate<br/>(interrupt)"]
+    Route -- ">= 0.73" --> Auto[auto_approve]
+    Route -- "0.58 <= c < 0.73" --> Human["human_approval<br/>(interrupt)"]
+    Route -- "< 0.58" --> Escalate["escalate<br/>(interrupt)"]
     Escalate --> Synth[synthesize]
-    Auto --> Commit[commit]
-    Human --> Commit
-    Synth --> Commit
+    Auto --> Done([END])
+    Human -- "approve / reject" --> Commit[commit]
+    Human -- edit --> Edit[edit_review]
+    Edit --> Human
+    Synth --> Human
+    Commit --> Done
 ```
 
 Every node also writes one row to `audit_events`. The graph state is persisted by `AsyncSqliteSaver`, so an interrupted session can resume from exactly where it stopped — even after the process is killed.
